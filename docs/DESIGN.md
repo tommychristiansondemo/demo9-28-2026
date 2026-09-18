@@ -342,6 +342,66 @@ predicted):
   `json.dumps(..., default=str)` would have silently turned scores into
   strings in the API response).
 
+## Conversation Memory (Bedrock AgentCore Memory)
+
+Replaced the app's original client-resends-the-whole-history design with
+real server-side conversation state, using AgentCore's own Memory feature —
+the direct fix for the "doesn't scale to weeks/months, loses everything on a
+page reload" gap raised in class discussion.
+
+**New, fully independent stack `PolicyPortal-Memory`** — a single
+`AWS::BedrockAgentCore::Memory` resource (CDK L2 `Memory` construct), with a
+managed **Summarization** strategy. Imported one-directionally by
+`PolicyPortal-AgentRuntime` and `PolicyPortal-Api` (memory id/ARN only); it
+never imports anything itself — same cycle-avoidance shape as
+`PolicyPortal-ModelSelector`.
+
+**Short-term memory**: `agents/policy_agent/agent.py` calls `list_events`
+for `(actorId=username, sessionId)` to reconstruct a session's recent turns
+before calling the model, and `create_event` after replying to persist both
+sides of the turn in one atomic call. Intermediate tool-call JSON from the
+`Converse` loop is deliberately **not** persisted as memory content — only
+the human-readable exchange — keeping memory readable and distinct from the
+structured reasoning log.
+
+**Long-term memory**: the Summarization strategy extracts a running summary
+per session, asynchronously. Cross-session recall is achieved at retrieval
+time by searching the `/policyportal/{actorId}/summary/` namespace *prefix*
+via `retrieve_memory_records`, which matches every session's child namespace
+for that actor (see bug below for why storage is per-session even though
+retrieval is cross-session).
+
+**Frontend**: the browser now only remembers its own `session_id`
+(`localStorage`, keyed per signed-in username) — it sends no conversation
+content at all. A new `GET <apiUrl>?session_id=...` path on the existing
+proxy Lambda (added alongside the existing `POST`) lets the frontend redraw
+history on page load via a cheap `list_events` read, without invoking the
+model. Confirmed live: a fresh request with zero client-sent history,
+reusing the same `session_id`, correctly recalled a fact from an earlier
+turn; a different `session_id` for the same user correctly did **not** see
+it (session isolation, also confirmed live).
+
+**Real deploy-only bug found building this:**
+- A managed **Summarization** strategy's namespace template **requires**
+  `{sessionId}` as a mandatory path component — confirmed live via
+  `ValidationException: ... requiring {sessionId} as a mandatory part of
+  namespace` when the first attempt used a purely per-actor namespace
+  (`/policyportal/{actorId}/summary/`, no `{sessionId}`) to try to get
+  cross-session storage directly. Fixed by storing per-session
+  (`/policyportal/{actorId}/summary/{sessionId}/`, satisfying the
+  requirement) and achieving the cross-session **retrieval** behavior
+  instead by querying the shorter `/policyportal/{actorId}/summary/` prefix,
+  which matches every session's child namespace — the requirement is about
+  where a strategy's output is *written*, not what a search can *match*.
+
+**Honesty check, not verified within this build's session:** the
+`retrieve_memory_records` call itself was verified live to execute cleanly
+(correct IAM permissions, no errors, well-formed empty result), but no
+extracted long-term summary content had actually appeared yet by the time
+verification finished — extraction is asynchronous and its real-world
+latency was not observed. Don't claim a specific delay; if this matters for
+a live class demo, verify freshly on the day rather than trusting this note.
+
 ## Repository layout
 
 ```

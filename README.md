@@ -25,7 +25,7 @@ cdk bootstrap aws://<account>/us-east-1
 # first run, not an error.
 cdk deploy PolicyPortal-Network PolicyPortal-Auth PolicyPortal-Data \
   PolicyPortal-Guardrail PolicyPortal-KnowledgeBase PolicyPortal-Gateway \
-  PolicyPortal-Cert PolicyPortal-Frontend --require-approval never
+  PolicyPortal-Cert PolicyPortal-Frontend PolicyPortal-Memory --require-approval never
 
 python3 scripts/seed_leave_balances.py
 
@@ -60,6 +60,10 @@ bash scripts/deploy_frontend.sh   # re-run so the main site picks up modelSelect
   Runtime's code config, so CDK will see a real property change).
 - **Frontend-only change:** `bash scripts/deploy_frontend.sh`. No backend
   redeploy needed -- the frontend reads `/config.json` at runtime.
+- **Conversation memory:** no manual redeploy step of its own -- weights/
+  history live in the `PolicyPortal-Memory` resource itself, not in code. A
+  code change to the memory read/write logic in `agent.py` follows the same
+  "Agent code change" step above.
 - **`knowledge/insights/projectknowledge.md` change (Class Insights app):**
   `cdk deploy PolicyPortal-InsightsSite` -- its `BucketDeployment` re-syncs
   the file into the private knowledge bucket, and the chat Lambda picks it
@@ -97,6 +101,21 @@ Class Insights app: no scripted smoke test yet (verified manually via direct
 `projectknowledge.md`, and `search_logs` returning real CloudWatch data
 including a genuine Guardrail intervention). A `scripts/smoke_test_insights.py`
 would be a reasonable follow-up if this app gets extended further.
+
+Conversation memory: verified live via direct `curl`/boto3 against the main
+app's Function URL (not yet added to `smoke_test.py`) -- a fresh POST with a
+new `session_id` and no client-sent history, followed by a second fresh POST
+reusing that same `session_id`, correctly recalled a fact from the first
+turn; a third POST using a *different* `session_id` for the same user
+correctly did not see it (session isolation); `GET ?session_id=...` returned
+the full reconstructed conversation, proving the page-reload-continuity path
+works without invoking the model; direct `list_events` calls confirmed the
+underlying events are genuinely persisted, not just apparently remembered by
+the model. The main app's RAG grounding, seeded leave-balance lookup, and
+Guardrail PII masking (forcing the model to echo back an email/phone from an
+earlier turn, confirming `{EMAIL}`/`{PHONE}` masking and
+`guardrail_intervened: true`) were all re-confirmed unaffected after this
+change.
 
 ## Tearing down
 

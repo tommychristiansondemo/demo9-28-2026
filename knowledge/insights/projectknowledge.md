@@ -25,8 +25,10 @@ Amazon Bedrock AgentCore," to demonstrate three enterprise-grade Bedrock
 capabilities together in one realistic app: Retrieval-Augmented Generation,
 an "Action Groups"-style tool-calling capability, and Guardrails.
 
-**Full architecture, 9 CDK stacks (`PolicyPortal-*` prefix, 8 in us-east-2 +
-1 cert stack in us-east-1):**
+**Full architecture, 10 CDK stacks (`PolicyPortal-*` prefix, 9 in us-east-2 +
+1 cert stack in us-east-1) for the core app** — plus 3 more optional/
+feature stacks described later in this document (InsightsSite, InsightsApi,
+ModelSelector):
 
 - **Network** — a VPC with no NAT gateway and no internet gateway
   (`10.90.0.0/16`, isolated subnets only). All AWS service access goes over
@@ -88,20 +90,52 @@ an "Action Groups"-style tool-calling capability, and Guardrails.
   not a public bucket), ACM certificate in us-east-1, Route 53 alias at
   `www.awsteach.com`. Reads a runtime `/config.json` written from live stack
   outputs, so a backend-only redeploy never needs a frontend rebuild.
+- **Memory** — a `AWS::BedrockAgentCore::Memory` resource backing real
+  server-side conversation history (see the dedicated section below). Fully
+  independent stack, imported one-directionally by AgentRuntime and Api.
 
-**Conversation history**: handled client-side, not server-side. The React
-frontend keeps the full message list in browser state and resends it as a
-`history` array with every request; the backend (both the proxy Lambda and
-the agent) is stateless between turns and simply rebuilds its working message
-list from whatever `history` the browser sends. There is a `session_id`
-(padded to AgentCore's required 33+ character minimum), but it is only used
-to correlate the AgentCore Runtime invocation and its logs — it does not
-retrieve any stored server-side conversation state. A lost or refreshed
-browser tab loses the conversation entirely. This is a known, disclosed
-limitation, not a bug — a production system handling weeks/months-long
-conversations would need a server-side session store and likely AgentCore's
-own Memory feature (short-term + long-term, with automatic summarization),
-rather than resending raw history forever.
+**Conversation history**: handled **server-side**, by a real **Bedrock
+AgentCore Memory** resource (`PolicyPortal-Memory` stack) — not client-resent
+anymore. The browser only remembers which `session_id` is its own
+(`localStorage`, scoped per signed-in username); it no longer sends or stores
+any conversation content itself. Concretely:
+- **Short-term memory**: on every turn, the agent calls `list_events` for
+  `(actorId=username, sessionId)` to reconstruct the session's recent turns
+  before calling the model, then calls `create_event` after replying to
+  persist that turn (both sides, one atomic call). A page reload genuinely no
+  longer loses the conversation — confirmed live: a fresh request with no
+  client-sent history, reusing the same `session_id`, correctly recalled a
+  fact from an earlier turn in that session.
+- **Session isolation**: a different `session_id` for the same user does
+  **not** see another session's short-term events — confirmed live.
+- **Long-term memory**: a managed **Summarization** strategy extracts a
+  running summary per session, asynchronously. AWS requires `{sessionId}` to
+  be part of a Summarization strategy's namespace template (confirmed live —
+  a purely per-actor namespace with no `{sessionId}` is rejected at
+  `CreateMemory` with a validation error); cross-session recall is achieved
+  at **retrieval** time instead, by searching the
+  `/policyportal/{actorId}/summary/` namespace **prefix**, which matches
+  every session's child namespace for that actor via `retrieve_memory_records`
+  (that call's own IAM permission and plumbing were verified live — it
+  executes cleanly and returns results with no error — but no extracted
+  long-term content had actually landed yet within this build's verification
+  window; extraction is asynchronous and its real-world latency was not
+  observed, so don't claim a specific delay).
+- The read path is also exposed directly: `GET <apiUrl>?session_id=...`
+  (Cognito-authenticated) lets the frontend redraw history on page load
+  without invoking the model at all — a cheap `list_events` call, not a full
+  agent turn.
+- Only the human-readable exchange (the user's message, the assistant's
+  reply) is persisted as memory content — intermediate tool-call JSON from
+  the `Converse` tool-use loop is deliberately not stored as "conversation,"
+  keeping memory readable. That technical detail is exactly what the
+  separate reasoning log (below) is for instead.
+- This replaced the app's original design, where the browser resent the
+  entire message list as a `history` array on every request and the backend
+  was fully stateless between turns — that didn't scale to long conversations
+  (linear token/cost growth per turn, a fixed context-window ceiling, and a
+  lost/refreshed tab losing everything). AgentCore Memory is the production
+  fix for exactly that gap.
 
 **Reasoning/audit logging**: the agent logs one structured JSON line per
 `Converse` call (timestamp, session ID, username, model ID, the triggering
