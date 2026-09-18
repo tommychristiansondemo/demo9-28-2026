@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Class Insights Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Class Insights Assistant</h1>
+        <div class="sub">Ask how the class demo apps were designed and deployed &mdash; and pull live logs</div>
+      </div>
+      <a class="main-app-link" href="https://www.awsteach.com">&larr; Back to Policy &amp; Benefits Assistant</a>
+    </header>
+    <div class="chat-log" id="chat-log"></div>
+    <div class="suggestions" id="suggestions">
+      <button data-q="How was the Policy &amp; Benefits Assistant's agent built, and why not classic Bedrock Agents?">Why not classic Bedrock Agents?</button>
+      <button data-q="What PII does the Guardrail mask, and how do I know it actually did something on a given turn?">What does the Guardrail actually mask?</button>
+      <button data-q="Show me the most recent reasoning log entries from the Policy & Benefits Assistant.">Show recent reasoning logs</button>
+      <button data-q="How is conversation history handled, and would it scale to a months-long conversation?">How does conversation history scale?</button>
+    </div>
+    <div class="composer">
+      <input id="input" placeholder="Ask about the class deployment..." autocomplete="off" />
+      <button id="send" class="btn">Send</button>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

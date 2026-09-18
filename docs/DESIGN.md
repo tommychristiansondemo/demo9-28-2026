@@ -199,6 +199,70 @@ it):**
   the model's response. Don't "fix" the SSN case by weakening the system
   prompt's own PII-avoidance instruction.
 
+## Class Insights companion app (added after the main app went live)
+
+A second, completely separate, public application so students can ask a
+chatbot about how both this app and the Insights app itself were designed
+and deployed, and pull real log/reasoning data on request. Built only
+because Tommy explicitly asked for it this session, by name — see the
+project memory's standing note on why this isn't a default pattern.
+
+**Live at the CloudFront default domain** (deliberately no custom subdomain —
+skips an unnecessary ACM/DNS-validation wait for an internal teaching tool),
+linked from a "Class Insights →" button on `www.awsteach.com`'s header.
+
+Two new stacks: `PolicyPortal-InsightsSite` (a public static site bucket
+behind CloudFront/OAC, plain HTML/CSS/vanilla JS with no build step, and a
+**private** knowledge bucket holding `knowledge/insights/projectknowledge.md`
+— readable only by the chat Lambda's role, never public) and
+`PolicyPortal-InsightsApi` (a Lambda Function URL, same reasoning as the main
+app's API — no 29s ceiling — running a manual `Converse` tool-use loop, no
+auth since the whole point is transparency for every student and it carries
+no transactional capability). Both reuse the main app's existing VPC rather
+than provisioning a second one.
+
+**Reasoning logging, added to the main app for this feature**:
+`agents/policy_agent/agent.py` now emits one structured JSON line per
+`Converse` call (`_log_reasoning`) — timestamp, session ID, username, model
+ID, triggering user text, tool calls made, stop reason, whether the
+Guardrail intervened, and a truncated response — to its own stdout, which
+lands in the **`-prod`**-suffixed AgentCore log group (confirmed live, not
+the `-DEFAULT` one AgentCore's docs describe). This is what the Insights
+chatbot's `search_logs` tool actually queries.
+
+**`search_logs` tool**: restricted via IAM to an explicit allow-list of
+exactly 4 log group ARNs (the main app's reasoning log, its API proxy
+Lambda, its Gateway tools Lambda, and this Insights Lambda's own log group)
+— a real security boundary, not a wildcard. Loops `logs:FilterLogEvents`
+per allow-listed group, merges and sorts by timestamp.
+
+**No API keys anywhere** — verified by grepping both frontend bundles for
+anything resembling a key/secret (none found); all AWS access happens
+server-side via the Lambda's IAM execution role.
+
+**Standing requirement**: `knowledge/insights/projectknowledge.md` must be
+updated any time either app's design changes, then `PolicyPortal-InsightsSite`
+redeployed (its `BucketDeployment` re-syncs the file automatically). This is
+not a one-time snapshot — see the project memory.
+
+**Bug found building this piece**: giving the chat Lambda's own `ALLOWED_LOG_GROUPS`
+environment variable a value built from `chat_fn.function_name` (a CDK
+token) created a genuine circular dependency — the function's own
+`Environment` property referencing its own logical ID via `Ref`, caught by
+`cdk synth`'s "Circular Dependencies" warning before ever reaching AWS.
+Fixed by giving the function an explicit literal `function_name=` and using
+that plain string everywhere instead of the token. A second, more dangerous
+bug was **not** caught by synth: the log group name was built as
+`f"{RUNTIME_NAME}-{agent_runtime.runtime.attr_agent_runtime_id}-prod"`, but
+`attr_agent_runtime_id` already returns the full `<name>-<suffix>` string
+(e.g. `policy_portal_agent-5UW6I96cI3`), not just the bare suffix — so the
+resulting log group name was doubled
+(`policy_portal_agent-policy_portal_agent-5UW6I96cI3-prod`) and silently
+matched **zero** events instead of erroring anywhere in CloudFormation or
+IAM. Only caught by asking the live chatbot a question with a known answer
+in the logs and getting an honest "found nothing" — a good live reminder
+that a wrong-but-syntactically-valid ARN fails silently, not loudly.
+
 ## Repository layout
 
 ```

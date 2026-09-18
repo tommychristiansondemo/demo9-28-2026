@@ -213,11 +213,18 @@ export default function App() {
           <h1>Policy &amp; Benefits Assistant</h1>
           <div className="sub">Powered by Amazon Bedrock AgentCore</div>
         </div>
-        {session && (
-          <button className="signout" onClick={() => setSession(null)}>
-            Sign out ({session.username})
-          </button>
-        )}
+        <div className="header-actions">
+          {config.insightsUrl && (
+            <a className="insights-link" href={config.insightsUrl} target="_blank" rel="noreferrer">
+              Class Insights &rarr;
+            </a>
+          )}
+          {session && (
+            <button className="signout" onClick={() => setSession(null)}>
+              Sign out ({session.username})
+            </button>
+          )}
+        </div>
       </header>
       {session ? (
         <ChatPanel config={config} session={session} onSignOut={() => setSession(null)} />

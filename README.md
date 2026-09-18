@@ -36,6 +36,13 @@ cdk deploy PolicyPortal-AgentRuntime PolicyPortal-Api --require-approval never
 
 # Frontend needs the API URL, which only exists after PolicyPortal-Api.
 bash scripts/deploy_frontend.sh
+
+# Optional: the Class Insights companion app (built only when explicitly
+# asked -- see docs/DESIGN.md). Depends on AgentRuntime/Api/Gateway already
+# being deployed (it reads their log group names).
+cdk deploy PolicyPortal-InsightsSite PolicyPortal-InsightsApi --require-approval never
+bash scripts/deploy_insights_frontend.sh
+bash scripts/deploy_frontend.sh   # re-run so the main site's insightsUrl link picks up
 ```
 
 ## Redeploying after a change
@@ -47,6 +54,12 @@ bash scripts/deploy_frontend.sh
   Runtime's code config, so CDK will see a real property change).
 - **Frontend-only change:** `bash scripts/deploy_frontend.sh`. No backend
   redeploy needed -- the frontend reads `/config.json` at runtime.
+- **`knowledge/insights/projectknowledge.md` change (Class Insights app):**
+  `cdk deploy PolicyPortal-InsightsSite` -- its `BucketDeployment` re-syncs
+  the file into the private knowledge bucket, and the chat Lambda picks it
+  up within ~60s (in-memory cache TTL), no Lambda redeploy needed. **This is
+  a standing requirement, not a one-time task** -- keep it in sync any time
+  either app's design changes.
 
 ## Verifying
 
@@ -61,6 +74,12 @@ out-of-corpus question, `check_leave_balance` for both an unseeded and a
 seeded user, `submit_request`, and a PII/Guardrail check (a fake SSN in the
 message, confirming it isn't echoed back and the Guardrail's own trace
 flagged an intervention).
+
+Class Insights app: no scripted smoke test yet (verified manually via direct
+`curl` against its Function URL when built -- design questions grounded in
+`projectknowledge.md`, and `search_logs` returning real CloudWatch data
+including a genuine Guardrail intervention). A `scripts/smoke_test_insights.py`
+would be a reasonable follow-up if this app gets extended further.
 
 ## Tearing down
 

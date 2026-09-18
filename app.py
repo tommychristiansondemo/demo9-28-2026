@@ -13,6 +13,8 @@ from policy_portal.agent_runtime_stack import AgentRuntimeStack, AGENT_CODE_KEY
 from policy_portal.api_stack import ApiStack
 from policy_portal.cert_stack import CertStack
 from policy_portal.frontend_stack import FrontendStack
+from policy_portal.insights_site_stack import InsightsSiteStack
+from policy_portal.insights_api_stack import InsightsApiStack
 
 ACCOUNT = "154833006816"
 REGION = "us-east-2"
@@ -94,6 +96,34 @@ if _agent_code_exists():
         agent_runtime_endpoint_name=agent_runtime.endpoint.name,
     )
     api.add_dependency(agent_runtime)
+
+    insights_site = InsightsSiteStack(app, "PolicyPortal-InsightsSite", env=main_env)
+
+    insights_api = InsightsApiStack(
+        app, "PolicyPortal-InsightsApi", env=main_env,
+        vpc=network.vpc,
+        lambda_sg=network.lambda_sg,
+        knowledge_bucket=insights_site.knowledge_bucket,
+        allowed_log_groups=[
+            # The agent's structured reasoning log -- confirmed live that the
+            # real content lands under the "-prod" endpoint-qualified suffix,
+            # not "-DEFAULT" (see agent_runtime_stack.py / DESIGN.md).
+            # NOTE: attr_agent_runtime_id already returns the full
+            # "<name>-<suffix>" form (e.g. "policy_portal_agent-5UW6I96cI3"),
+            # not just the bare suffix -- prepending RUNTIME_NAME again here
+            # produced a doubled, non-existent log group name
+            # ("policy_portal_agent-policy_portal_agent-...") that silently
+            # matched zero events instead of erroring, confirmed live via
+            # `aws lambda get-function-configuration` showing the bad value.
+            f"/aws/bedrock-agentcore/runtimes/{agent_runtime.runtime.attr_agent_runtime_id}-prod",
+            f"/aws/lambda/{api.proxy_fn.function_name}",
+            f"/aws/lambda/{gateway.tools_fn.function_name}",
+        ],
+    )
+    insights_api.add_dependency(insights_site)
+    insights_api.add_dependency(agent_runtime)
+    insights_api.add_dependency(api)
+    insights_api.add_dependency(gateway)
 else:
     print(
         "\n*** PolicyPortal-AgentRuntime / PolicyPortal-Api skipped: "

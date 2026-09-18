@@ -124,3 +124,20 @@ header.topbar .sub {
   cursor: pointer;
   font-size: 12px;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.insights-link {
+  color: white;
+  background: #7c3aed;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.insights-link:hover { background: #6d28d9; }
