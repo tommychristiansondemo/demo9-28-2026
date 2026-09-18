@@ -1,0 +1,4 @@
+bedrock-agentcore
+mcp-proxy-for-aws
+mcp
+boto3

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+cdk.out/
+cdk.context.json
+node_modules/
+frontend/dist/
+frontend/public/config.json
+.DS_Store
