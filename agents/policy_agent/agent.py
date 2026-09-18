@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import traceback
 
 import boto3
@@ -96,6 +97,44 @@ async def _call_gateway_tool(session: ClientSession, name: str, arguments: dict)
         return {"raw": joined}
 
 
+def _log_reasoning(*, session_id: str, username: str, messages: list, resp: dict) -> None:
+    """One structured JSON line per Converse call -- the reasoning-audit trail
+    the Class Insights companion app's search_logs tool reads. Must be
+    print(..., flush=True): stdout inside the Runtime container is fully
+    block-buffered, not line-buffered (see the tool-call error log below for
+    the same lesson learned live).
+    """
+    output_message = resp.get("output", {}).get("message", {})
+    tool_calls = [
+        block["toolUse"]["name"]
+        for block in output_message.get("content", [])
+        if "toolUse" in block
+    ]
+    last_user_text = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            texts = [b.get("text", "") for b in m.get("content", []) if "text" in b]
+            if texts:
+                last_user_text = texts[0][:500]
+                break
+    output_text = "".join(
+        b.get("text", "") for b in output_message.get("content", []) if "text" in b
+    )[:500]
+    record = {
+        "type": "reasoning_log",
+        "ts": time.time(),
+        "session_id": session_id,
+        "username": username,
+        "model_id": MODEL_ID,
+        "last_user_text": last_user_text,
+        "tool_calls": tool_calls,
+        "stop_reason": resp.get("stopReason"),
+        "guardrail_intervened": resp.get("stopReason") == "guardrail_intervened",
+        "output_text": output_text,
+    }
+    print(json.dumps(record), flush=True)
+
+
 def _converse(messages, tool_specs):
     return bedrock_runtime.converse(
         modelId=MODEL_ID,
@@ -111,7 +150,7 @@ def _converse(messages, tool_specs):
     )
 
 
-async def _run_turn(username: str, messages: list) -> dict:
+async def _run_turn(username: str, session_id: str, messages: list) -> dict:
     """Opens a fresh Gateway MCP session for this invocation rather than
     reusing one cached at cold start. AgentCore Runtime invokes the handler
     in a fresh AnyIO worker thread each time (no guaranteed event-loop
@@ -134,6 +173,7 @@ async def _run_turn(username: str, messages: list) -> dict:
 
             for _ in range(6):  # bounded tool-use loop
                 resp = _converse(messages, tool_specs)
+                _log_reasoning(session_id=session_id, username=username, messages=messages, resp=resp)
 
                 # `trace.guardrail` is present on every response regardless of
                 # whether anything happened (confirmed live: a totally benign
@@ -218,7 +258,7 @@ def invoke(payload):
             messages.append({"role": role, "content": [{"text": text}]})
     messages.append({"role": "user", "content": [{"text": f"[signed in as: {username}] {prompt}"}]})
 
-    result = asyncio.run(_run_turn(username, messages))
+    result = asyncio.run(_run_turn(username, session_id, messages))
 
     return {
         "response": result["text"],
