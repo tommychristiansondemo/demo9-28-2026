@@ -9,12 +9,13 @@ from policy_portal.data_stack import DataStack
 from policy_portal.guardrail_stack import GuardrailStack
 from policy_portal.knowledge_base_stack import KnowledgeBaseStack
 from policy_portal.gateway_stack import GatewayStack
-from policy_portal.agent_runtime_stack import AgentRuntimeStack, AGENT_CODE_KEY
+from policy_portal.agent_runtime_stack import AgentRuntimeStack, AGENT_CODE_KEY, ENDPOINT_NAME, MODEL_ID as DEFAULT_MODEL_ID
 from policy_portal.api_stack import ApiStack
 from policy_portal.cert_stack import CertStack
 from policy_portal.frontend_stack import FrontendStack
 from policy_portal.insights_site_stack import InsightsSiteStack
 from policy_portal.insights_api_stack import InsightsApiStack
+from policy_portal.model_selector_stack import ModelSelectorStack
 
 ACCOUNT = "154833006816"
 REGION = "us-east-2"
@@ -124,6 +125,17 @@ if _agent_code_exists():
     insights_api.add_dependency(agent_runtime)
     insights_api.add_dependency(api)
     insights_api.add_dependency(gateway)
+
+    model_selector = ModelSelectorStack(
+        app, "PolicyPortal-ModelSelector", env=main_env,
+        runtime_id=agent_runtime.runtime.attr_agent_runtime_id,
+        runtime_arn=agent_runtime.runtime.attr_agent_runtime_arn,
+        runtime_role_arn=agent_runtime.runtime_role.role_arn,
+        agent_code_bucket=data.agent_code_bucket,
+        endpoint_name=ENDPOINT_NAME,
+        default_model_id=DEFAULT_MODEL_ID,
+    )
+    model_selector.add_dependency(agent_runtime)
 else:
     print(
         "\n*** PolicyPortal-AgentRuntime / PolicyPortal-Api skipped: "

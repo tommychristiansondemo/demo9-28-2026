@@ -43,6 +43,12 @@ bash scripts/deploy_frontend.sh
 cdk deploy PolicyPortal-InsightsSite PolicyPortal-InsightsApi --require-approval never
 bash scripts/deploy_insights_frontend.sh
 bash scripts/deploy_frontend.sh   # re-run so the main site's insightsUrl link picks up
+
+# Optional: Model Tuning / "Bedrock flexibility" demo (built only when
+# explicitly asked -- see docs/DESIGN.md). Depends on AgentRuntime already
+# being deployed (imports its id/ARN/role).
+cdk deploy PolicyPortal-ModelSelector --require-approval never
+bash scripts/deploy_frontend.sh   # re-run so the main site picks up modelSelectorUrl
 ```
 
 ## Redeploying after a change
@@ -74,6 +80,17 @@ out-of-corpus question, `check_leave_balance` for both an unseeded and a
 seeded user, `submit_request`, and a PII/Guardrail check (a fake SSN in the
 message, confirming it isn't echoed back and the Guardrail's own trace
 flagged an intervention).
+
+Model Tuning: verified live via direct `curl`/boto3 against its Function
+URL -- default GET returns the seed weights/candidates, a quality-heavy
+POST (100/0/0) picks Opus 4.5 and genuinely switches the live Runtime
+(confirmed via `get-agent-runtime`'s `environmentVariables.MODEL_ID`,
+`get-agent-runtime-endpoint`'s `liveVersion`, a real `invoke_agent_runtime`
+call, and the resulting structured reasoning log all agreeing), a
+cost-heavy POST (0/100/0) switches to Nova Micro the same way, and 3
+AppConfig hosted-configuration-versions were confirmed to exist afterward
+(the seed plus both test saves) -- weights are genuinely persisted, not
+just held in Lambda memory.
 
 Class Insights app: no scripted smoke test yet (verified manually via direct
 `curl` against its Function URL when built -- design questions grounded in

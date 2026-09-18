@@ -141,3 +141,62 @@ header.topbar .sub {
   white-space: nowrap;
 }
 .insights-link:hover { background: #6d28d9; }
+
+.tuning-box {
+  margin: 0 20px 24px;
+}
+.tuning-toggle {
+  width: 100%;
+  text-align: left;
+  background: white;
+  border: 1px solid #dde3e8;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0b3d5c;
+  cursor: pointer;
+}
+.tuning-body {
+  background: white;
+  border: 1px solid #dde3e8;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 16px;
+}
+.tuning-blurb {
+  font-size: 12px;
+  color: #556;
+  margin-top: 0;
+}
+.slider-row {
+  margin-bottom: 10px;
+}
+.slider-row label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.slider-row input[type="range"] {
+  width: 100%;
+}
+.weight-sum {
+  font-size: 12px;
+  color: #556;
+  margin-bottom: 12px;
+}
+.ranking-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 16px;
+  font-size: 12px;
+}
+.ranking-table th, .ranking-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef1f4;
+}
+.ranking-table .live-row {
+  background: #f0f9f2;
+  font-weight: 600;
+}

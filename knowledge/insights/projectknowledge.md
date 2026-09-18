@@ -134,6 +134,67 @@ assumptions. This reasoning log is exactly what the `search_logs` tool in
   Runtime's own built-in unified observability, not a separate CloudTrail
   trail — don't claim CloudTrail coverage for this app that doesn't exist.
 
+### Feature: Model Tuning ("Bedrock flexibility" demo)
+
+**What it is.** A live demonstration, visible on the main app's page below
+the chat (no sign-in required — same no-auth design as the Insights app,
+since it carries no student data), that lets anyone adjust three sliders
+(Quality / Cost / Latency, always summing to 100%) and click "Evaluate &
+Apply" to score 5 candidate LLMs against those preferences. If a different
+model wins under the current weights, the live AgentCore Runtime is actually
+redirected to it — not simulated.
+
+**The 5 candidates**, a real spread across 2 vendors: Claude Opus 4.5
+(highest illustrative quality, highest illustrative cost), Claude Sonnet 4.5
+(the app's original default, balanced), Claude Haiku 4.5, Amazon Nova Pro,
+Amazon Nova Micro (cheapest/fastest illustrative profile).
+
+**What's real vs. illustrative, stated plainly:** `quality_score` and
+`cost_score` for each candidate are static, illustrative, documented
+reference values in `lambdas/model_selector/handler.py` — there's no fast
+way to genuinely benchmark "quality" in a button click. `latency_score` is
+the one dimension actually measured live, fresh, on every "Evaluate & Apply"
+click: 5 concurrent real `Converse` calls, timed, fastest scores 100. A
+consequence of this, confirmed live and working as designed (not a bug): at
+the default 50/25/25 weights the ranking does not reliably keep Sonnet 4.5
+on top, since cost and latency carry enough combined weight to occasionally
+favor a cheaper/faster model — this demonstrates that "best model" genuinely
+depends on what you weight, it isn't a fixed answer.
+
+**Where the weights actually live.** Saved weights are genuinely written to
+**AppConfig** (Application/Environment/ConfigurationProfile, a custom
+zero-final-bake-time Deployment Strategy) on every "Evaluate & Apply" click
+— this is the literal "parameters stored in AppConfig" requirement, not just
+an in-memory value. A small DynamoDB table caches the latest weights/ranking/
+current-model so the page can render instantly without an AppConfig read
+round trip.
+
+**How the live switch actually works.** This is the one part of the app
+that runs on **AgentCore Runtime**, so switching its model is a two-phase,
+synchronous flow inside the same Lambda invocation (the Function URL allows
+up to 15 minutes, unlike API Gateway's hard 29-second ceiling): call
+`UpdateAgentRuntime` with a new `MODEL_ID` environment variable, poll
+`GetAgentRuntime` until the new version reaches `READY` (typically well
+under 2 minutes), then call `UpdateAgentRuntimeEndpoint` to actually move
+live traffic, and poll that until it settles too. Firing both update calls
+back-to-back without waiting throws `ConflictException` — this polling
+sequence exists specifically to avoid that.
+
+**Architecture: one more independent stack, `PolicyPortal-ModelSelector`.**
+Deliberately has **no inbound dependency** from `PolicyPortal-Api` or
+`PolicyPortal-AgentRuntime` (only imports the Runtime's id/ARN/role one
+directionally) and owns its own Lambda Function URL rather than adding
+routes to the main app's existing one — this avoids the CDK
+dependency-cycle bug class hit twice already in this series. It is also
+**deliberately not placed in the main VPC**: its Bedrock control-plane calls
+(`UpdateAgentRuntime` etc.) have no CDK-exposed PrivateLink endpoint
+constant, and Lambdas outside the customer VPC reach AWS's public endpoints
+directly with no NAT/endpoint needed — the same precedent already
+established by `lambdas/runtime_waiter`. This is a narrow, deliberate
+exception to the rest of the app's VPC-isolation posture, made specifically
+because this Lambda is an admin/control action, not one that touches
+student data.
+
 ## Application 2: Class Insights Assistant (this app)
 
 **What it is.** A second, completely separate, public application (no login)

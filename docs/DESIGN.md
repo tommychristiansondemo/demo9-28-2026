@@ -263,6 +263,85 @@ IAM. Only caught by asking the live chatbot a question with a known answer
 in the logs and getting an honest "found nothing" — a good live reminder
 that a wrong-but-syntactically-valid ARN fails silently, not loudly.
 
+## Model Tuning ("Bedrock flexibility" demo)
+
+A live, no-auth-required feature on the main app's own page: three sliders
+(Quality/Cost/Latency, always summing to 100%) and an "Evaluate & Apply"
+button that scores 5 candidate LLMs (Claude Opus 4.5, Sonnet 4.5, Haiku 4.5,
+Amazon Nova Pro, Nova Micro) against the current weights and, if a different
+model wins, actually redirects the live AgentCore Runtime to it.
+
+**New, fully independent stack `PolicyPortal-ModelSelector`** — no inbound
+dependency from `PolicyPortal-Api` or `PolicyPortal-AgentRuntime` (only
+imports the Runtime's id/ARN/role one directionally), owns its own Lambda
+Function URL rather than adding routes to the main app's existing one. This
+avoids the CDK dependency-cycle bug class documented earlier in this series
+(ModelSelectorStack must be independent; a consuming stack imports from it,
+never the reverse).
+
+**Deliberately not placed in the main VPC** — `bedrock-agentcore-control`
+(needed for `UpdateAgentRuntime`) has no CDK-exposed PrivateLink endpoint
+constant. `lambdas/runtime_waiter` already established the precedent of
+calling this same client from outside the VPC in this exact stack set:
+Lambdas not attached to the customer VPC reach AWS public endpoints directly,
+no NAT/endpoint needed. A narrow, deliberate exception to the rest of the
+app's VPC-isolation posture, since this Lambda is an admin/control action,
+not one touching student data.
+
+**Scoring design, stated plainly:** `quality_score`/`cost_score` per
+candidate (`lambdas/model_selector/handler.py::MODEL_CANDIDATES`) are
+static, illustrative, documented reference values — not live-benchmarked.
+`latency_score` is the one dimension actually measured live: 5 concurrent
+`Converse` calls, timed, fastest scores 100. A candidate that errors scores
+0 rather than aborting the whole evaluation. Consequence, confirmed live and
+working as designed: at the default 50/25/25 weights the ranking does not
+reliably keep Sonnet 4.5 on top.
+
+**Where weights live:** genuinely written to AppConfig
+(Application/Environment/ConfigurationProfile) on every "Evaluate & Apply"
+click, via a custom `CfnDeploymentStrategy(final_bake_time_in_minutes=0)`
+used from the start (both the one-time seed deployment and every future
+weights-save) — AppConfig's predefined `AllAtOnce` strategy carries a hidden
+10-minute `FinalBakeTimeInMinutes` that would otherwise block back-to-back
+saves during a live class. A small DynamoDB table (`StateTable`) caches the
+latest weights/ranking/current-model for instant page reads without an
+AppConfig session round trip.
+
+**Live-switch mechanism:** synchronous, two-phase, inside one Lambda
+invocation (the Function URL allows up to 15 minutes, unlike API Gateway's
+29s ceiling) — `UpdateAgentRuntime` with a new `MODEL_ID` env var, poll
+`GetAgentRuntime` until `READY`, then `UpdateAgentRuntimeEndpoint`, poll
+until that settles too. `agents/policy_agent/agent.py` already read
+`MODEL_ID` from an environment variable (no code change needed there) — the
+switch works purely by AgentCore Runtime picking up the new env var on the
+new version.
+
+**Real deploy-only bugs found building this piece** (all confirmed live via
+actual `AccessDeniedException`/`ValidationException` responses, not
+predicted):
+- `appconfig:CreateHostedConfigurationVersion` authorizes against the
+  **bare** application ARN (`application/<id>`, no trailing path) — a
+  policy scoped only to `application/<id>/*` (matching a pattern from an
+  earlier class) failed live. Grant both forms.
+- `UpdateAgentRuntime` re-supplies the Runtime's full config on every call
+  (no partial-patch mode) including `roleArn` — the **caller** (this
+  Lambda) needs its own `iam:PassRole` grant on that role, not just the
+  Runtime's own service role needing to exist. Confirmed live via
+  `AccessDeniedException: ... not authorized to perform: iam:PassRole`.
+- `UpdateAgentRuntime` also validates the referenced S3 code object using
+  the **calling principal's own credentials**, not only the passed
+  `roleArn`'s — confirmed live via `ValidationException: Access denied when
+  trying to retrieve zip file from S3` even though the Runtime's own
+  execution role already had read access and the object was unchanged.
+  Apparent defense-in-depth/anti-confused-deputy check. Fixed by granting
+  this Lambda its own read access to the agent code bucket too.
+- DynamoDB's boto3 resource layer rejects native Python `float` (Decimal
+  only) — the ranking's `final_score` is computed as a float; fixed with a
+  `json.loads(json.dumps(...), parse_float=Decimal)` round-trip on write,
+  and the reverse conversion back to real numbers on read (otherwise
+  `json.dumps(..., default=str)` would have silently turned scores into
+  strings in the API response).
+
 ## Repository layout
 
 ```
@@ -270,11 +349,15 @@ app.py                      CDK app entrypoint (two-phase: agent code must
                              exist in S3 before AgentRuntime/Api stacks synth)
 policy_portal/               CDK stacks
 lambdas/                     presignup, tools (Gateway target), proxy,
-                             kb_ingest (ingestion trigger), runtime_waiter
+                             kb_ingest (ingestion trigger), runtime_waiter,
+                             insights_chat, model_selector
 agents/policy_agent/         the AgentCore Runtime entrypoint
 knowledge/corpus/            5 synthetic policy documents
-frontend/                    React SPA
+knowledge/insights/          projectknowledge.md (Class Insights grounding doc)
+frontend/                    React SPA (Chat + Model Tuning panel)
+insights-frontend/           Class Insights static chat UI
 scripts/                     package_agent.sh, deploy_frontend.sh,
+                             deploy_insights_frontend.sh,
                              seed_leave_balances.py, smoke_test.py
 tests/                       moto-mocked unit tests
 ```

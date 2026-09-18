@@ -18,12 +18,14 @@ USER_POOL_CLIENT_ID=$(out PolicyPortal-Auth UserPoolClientId)
 API_URL=$(out PolicyPortal-Api ApiFunctionUrl)
 SITE_BUCKET=$(out PolicyPortal-Frontend SiteBucketName)
 DIST_ID=$(out PolicyPortal-Frontend DistributionId)
-# Optional: the Class Insights companion app isn't always deployed. Don't fail
-# this script if PolicyPortal-InsightsSite doesn't exist yet.
+# Optional: the Class Insights companion app / Model Tuning feature aren't
+# always deployed. Don't fail this script if either stack doesn't exist yet.
 INSIGHTS_URL=$(aws cloudformation describe-stacks --region "$REGION" --stack-name PolicyPortal-InsightsSite \
   --query "Stacks[0].Outputs[?OutputKey=='InsightsSiteUrl'].OutputValue" --output text 2>/dev/null || true)
+MODEL_SELECTOR_URL=$(aws cloudformation describe-stacks --region "$REGION" --stack-name PolicyPortal-ModelSelector \
+  --query "Stacks[0].Outputs[?OutputKey=='ModelSelectorUrl'].OutputValue" --output text 2>/dev/null || true)
 
-echo "UserPoolId=$USER_POOL_ID ClientId=$USER_POOL_CLIENT_ID ApiUrl=$API_URL Bucket=$SITE_BUCKET InsightsUrl=${INSIGHTS_URL:-<none>}"
+echo "UserPoolId=$USER_POOL_ID ClientId=$USER_POOL_CLIENT_ID ApiUrl=$API_URL Bucket=$SITE_BUCKET InsightsUrl=${INSIGHTS_URL:-<none>} ModelSelectorUrl=${MODEL_SELECTOR_URL:-<none>}"
 
 cat > frontend/public/config.json <<EOF
 {
@@ -31,7 +33,8 @@ cat > frontend/public/config.json <<EOF
   "userPoolClientId": "$USER_POOL_CLIENT_ID",
   "region": "$REGION",
   "apiUrl": "$API_URL",
-  "insightsUrl": "${INSIGHTS_URL:-}"
+  "insightsUrl": "${INSIGHTS_URL:-}",
+  "modelSelectorUrl": "${MODEL_SELECTOR_URL:-}"
 }
 EOF
 
