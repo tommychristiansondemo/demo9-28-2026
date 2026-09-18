@@ -35,6 +35,8 @@ class AgentRuntimeStack(Stack):
         knowledge_base_id: str,
         guardrail_id: str,
         guardrail_version: str,
+        memory_id: str,
+        memory_arn: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -101,6 +103,22 @@ class AgentRuntimeStack(Stack):
             )
         )
         agent_code_bucket.grant_read(runtime_role)
+        # AgentCore Memory: real security boundary scoped to this one
+        # memory resource's ARN, not a wildcard. CreateEvent/ListEvents
+        # give the agent read/write of a session's short-term (raw) turns;
+        # RetrieveMemoryRecords/GetEvent give it read access to the
+        # extracted long-term per-user summary.
+        runtime_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                ],
+                resources=[memory_arn],
+            )
+        )
 
         self.runtime = bac.CfnRuntime(
             self,
@@ -134,6 +152,7 @@ class AgentRuntimeStack(Stack):
                 "KNOWLEDGE_BASE_ID": knowledge_base_id,
                 "GUARDRAIL_ID": guardrail_id,
                 "GUARDRAIL_VERSION": guardrail_version,
+                "MEMORY_ID": memory_id,
                 "AWS_REGION_NAME": self.region,
             },
         )

@@ -8,12 +8,44 @@ agentcore = boto3.client("bedrock-agentcore")
 
 RUNTIME_ARN = os.environ["AGENT_RUNTIME_ARN"]
 ENDPOINT_NAME = os.environ["AGENT_RUNTIME_ENDPOINT_NAME"]
+MEMORY_ID = os.environ["MEMORY_ID"]
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization,content-type",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 }
+
+
+def _load_history(username: str, session_id: str) -> list:
+    """Read-only replay of a session's short-term memory, for the frontend
+    to redraw a conversation after a page reload without the browser ever
+    having stored it itself. Conversation state now lives server-side in
+    AgentCore Memory (see agents/policy_agent/agent.py) -- this function
+    does not call the model, it just reads what's already there.
+    """
+    try:
+        resp = agentcore.list_events(
+            memoryId=MEMORY_ID,
+            actorId=username,
+            sessionId=session_id,
+            includePayloads=True,
+            maxResults=50,
+        )
+    except ClientError:
+        return []
+    events = sorted(resp.get("events", []), key=lambda e: e.get("eventTimestamp") or 0)
+    turns = []
+    for event in events:
+        for item in event.get("payload", []):
+            conv = item.get("conversational")
+            if not conv:
+                continue
+            role = conv.get("role", "").lower()
+            text = conv.get("content", {}).get("text", "")
+            if role in ("user", "assistant") and text:
+                turns.append({"role": role, "text": text})
+    return turns
 
 
 def _response(status, body):
@@ -34,12 +66,20 @@ def _authenticate(event):
 
 
 def handler(event, context):
-    if event.get("requestContext", {}).get("http", {}).get("method") == "OPTIONS":
+    method = event.get("requestContext", {}).get("http", {}).get("method")
+    if method == "OPTIONS":
         return _response(200, {})
 
     username = _authenticate(event)
     if not username:
         return _response(401, {"error": "Unauthorized"})
+
+    if method == "GET":
+        qs = event.get("queryStringParameters") or {}
+        session_id = qs.get("session_id")
+        if not session_id:
+            return _response(400, {"error": "Missing 'session_id'"})
+        return _response(200, {"history": _load_history(username, session_id)})
 
     try:
         body = json.loads(event.get("body") or "{}")
@@ -54,11 +94,14 @@ def handler(event, context):
     if not message:
         return _response(400, {"error": "Missing 'message'"})
 
+    # Conversation history is no longer client-supplied -- the agent
+    # itself reconstructs recent turns from AgentCore Memory using
+    # (username, session_id). This proxy's only job is still just to
+    # authenticate and invoke.
     payload = json.dumps({
         "prompt": message,
         "username": username,
         "session_id": session_id,
-        "history": body.get("history", []),
     }).encode("utf-8")
 
     try:

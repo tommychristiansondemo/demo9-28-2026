@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import os
 import sys
@@ -15,16 +16,111 @@ GATEWAY_URL = os.environ["GATEWAY_URL"]
 KNOWLEDGE_BASE_ID = os.environ["KNOWLEDGE_BASE_ID"]
 GUARDRAIL_ID = os.environ["GUARDRAIL_ID"]
 GUARDRAIL_VERSION = os.environ["GUARDRAIL_VERSION"]
+MEMORY_ID = os.environ["MEMORY_ID"]
 REGION = os.environ.get("AWS_REGION_NAME") or os.environ.get("AWS_REGION", "us-east-2")
 
 bedrock_runtime = boto3.client("bedrock-runtime", region_name=REGION)
 bedrock_agent_runtime = boto3.client("bedrock-agent-runtime", region_name=REGION)
+agentcore_data = boto3.client("bedrock-agentcore", region_name=REGION)
+
+MEMORY_SUMMARY_NAMESPACE = "/policyportal/{actor_id}/summary/"
+
+
+def _load_recent_events(username: str, session_id: str, limit: int = 20) -> list:
+    """Short-term memory: reconstruct this session's recent turns from
+    AgentCore Memory instead of trusting a client-supplied history array
+    (the old design -- the browser resent the entire conversation on every
+    turn, which doesn't scale to weeks/months and loses everything on a
+    page reload). Returns Converse-shaped {"role", "content"} messages.
+    """
+    try:
+        resp = agentcore_data.list_events(
+            memoryId=MEMORY_ID,
+            actorId=username,
+            sessionId=session_id,
+            includePayloads=True,
+            maxResults=limit,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"list_events failed: {e!r}", flush=True)
+        return []
+    # Sort defensively rather than assume a particular API ordering.
+    events = sorted(resp.get("events", []), key=lambda e: e.get("eventTimestamp") or 0)
+    messages = []
+    for event in events:
+        for item in event.get("payload", []):
+            conv = item.get("conversational")
+            if not conv:
+                continue
+            role = conv.get("role", "").lower()
+            text = conv.get("content", {}).get("text", "")
+            if role in ("user", "assistant") and text:
+                messages.append({"role": role, "content": [{"text": text}]})
+    return messages
+
+
+def _load_long_term_context(username: str, query: str) -> str:
+    """Long-term memory: semantic search over this user's extracted
+    cross-session summary (populated asynchronously by the Memory
+    resource's Summarization strategy -- not instant, and empty until the
+    first session has had time to be summarized). Folded into the system
+    prompt rather than replayed as raw transcript.
+    """
+    if not query:
+        return ""
+    namespace = MEMORY_SUMMARY_NAMESPACE.format(actor_id=username)
+    try:
+        resp = agentcore_data.retrieve_memory_records(
+            memoryId=MEMORY_ID,
+            namespace=namespace,
+            searchCriteria={"searchQuery": query, "topK": 3},
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"retrieve_memory_records failed: {e!r}", flush=True)
+        return ""
+    snippets = []
+    for record in resp.get("memoryRecordSummaries", []):
+        content = record.get("content") or {}
+        text = content.get("text") if isinstance(content, dict) else None
+        if text:
+            snippets.append(text)
+    return "\n".join(snippets)
+
+
+def _write_turn_events(username: str, session_id: str, user_text: str, assistant_text: str) -> None:
+    """Persist this turn (both sides) to AgentCore Memory as one atomic
+    event. Only the human-readable exchange is stored -- intermediate
+    tool-call JSON from the Converse loop is deliberately not persisted as
+    conversation content, to keep memory readable and keep it "the
+    conversation," not a technical trace (that's what the separate
+    reasoning log is for).
+    """
+    if not user_text or not assistant_text:
+        return
+    try:
+        agentcore_data.create_event(
+            memoryId=MEMORY_ID,
+            actorId=username,
+            sessionId=session_id,
+            eventTimestamp=datetime.datetime.now(datetime.timezone.utc),
+            payload=[
+                {"conversational": {"content": {"text": user_text}, "role": "USER"}},
+                {"conversational": {"content": {"text": assistant_text}, "role": "ASSISTANT"}},
+            ],
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"create_event failed: {e!r}", flush=True)
 
 SYSTEM_PROMPT = """You are the Policy & Benefits Assistant for a mixed government,
 corporate, and education workforce portal. You help employees understand
 organizational policy (leave, benefits, code of conduct, remote work, data
 handling) and, when asked, check their own leave balance or submit a formal
 leave/benefits request on their behalf.
+
+You DO have memory: your recent turns in this session, and a summary of this
+user's earlier sessions when relevant, are provided to you as conversation
+history and context above -- don't tell the user you have no memory of past
+interactions, since that's no longer true.
 
 Rules:
 - Always ground policy answers in the retrieve_policy_docs tool. If the corpus
@@ -135,10 +231,18 @@ def _log_reasoning(*, session_id: str, username: str, messages: list, resp: dict
     print(json.dumps(record), flush=True)
 
 
-def _converse(messages, tool_specs):
+def _converse(messages, tool_specs, long_term_context=""):
+    system_blocks = [{"text": SYSTEM_PROMPT}]
+    if long_term_context:
+        system_blocks.append({
+            "text": (
+                "Relevant context extracted from this user's earlier sessions "
+                f"(a summary, not verbatim transcript):\n{long_term_context}"
+            )
+        })
     return bedrock_runtime.converse(
         modelId=MODEL_ID,
-        system=[{"text": SYSTEM_PROMPT}],
+        system=system_blocks,
         messages=messages,
         toolConfig={"tools": [RETRIEVE_TOOL] + tool_specs},
         inferenceConfig={"maxTokens": 800, "temperature": 0.2},
@@ -150,7 +254,7 @@ def _converse(messages, tool_specs):
     )
 
 
-async def _run_turn(username: str, session_id: str, messages: list) -> dict:
+async def _run_turn(username: str, session_id: str, messages: list, long_term_context: str = "") -> dict:
     """Opens a fresh Gateway MCP session for this invocation rather than
     reusing one cached at cold start. AgentCore Runtime invokes the handler
     in a fresh AnyIO worker thread each time (no guaranteed event-loop
@@ -172,7 +276,7 @@ async def _run_turn(username: str, session_id: str, messages: list) -> dict:
             tool_names = {t.name for t in tools}
 
             for _ in range(6):  # bounded tool-use loop
-                resp = _converse(messages, tool_specs)
+                resp = _converse(messages, tool_specs, long_term_context)
                 _log_reasoning(session_id=session_id, username=username, messages=messages, resp=resp)
 
                 # `trace.guardrail` is present on every response regardless of
@@ -248,17 +352,19 @@ def invoke(payload):
     prompt = payload.get("prompt", "")
     username = payload.get("username", "unknown")
     session_id = payload.get("session_id", "")
-    history = payload.get("history", [])
 
-    messages = []
-    for turn in history:
-        role = turn.get("role")
-        text = turn.get("text", "")
-        if role in ("user", "assistant") and text:
-            messages.append({"role": role, "content": [{"text": text}]})
+    # Conversation state now lives server-side in AgentCore Memory, keyed
+    # on (username, session_id) -- not resent by the client. Short-term:
+    # this session's recent turns. Long-term: a semantic summary of what
+    # this user has discussed across ALL of their sessions.
+    messages = _load_recent_events(username, session_id)
+    long_term_context = _load_long_term_context(username, prompt)
+
     messages.append({"role": "user", "content": [{"text": f"[signed in as: {username}] {prompt}"}]})
 
-    result = asyncio.run(_run_turn(username, session_id, messages))
+    result = asyncio.run(_run_turn(username, session_id, messages, long_term_context))
+
+    _write_turn_events(username, session_id, prompt, result["text"])
 
     return {
         "response": result["text"],

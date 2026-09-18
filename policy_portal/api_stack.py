@@ -21,6 +21,8 @@ class ApiStack(Stack):
         lambda_sg: ec2.SecurityGroup,
         agent_runtime_arn: str,
         agent_runtime_endpoint_name: str,
+        memory_id: str,
+        memory_arn: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -40,6 +42,7 @@ class ApiStack(Stack):
             environment={
                 "AGENT_RUNTIME_ARN": agent_runtime_arn,
                 "AGENT_RUNTIME_ENDPOINT_NAME": agent_runtime_endpoint_name,
+                "MEMORY_ID": memory_id,
             },
         )
         proxy_fn.add_to_role_policy(
@@ -57,12 +60,22 @@ class ApiStack(Stack):
                 resources=["*"],
             )
         )
+        # Lets the frontend fetch a signed-in user's existing conversation
+        # (GET /?session_id=...) directly, without round-tripping through
+        # the agent/model -- e.g. to redraw history after a page reload.
+        # Read-only, scoped to this one memory resource's ARN.
+        proxy_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:ListEvents"],
+                resources=[memory_arn],
+            )
+        )
 
         self.function_url = proxy_fn.add_function_url(
             auth_type=lambda_.FunctionUrlAuthType.NONE,
             cors=lambda_.FunctionUrlCorsOptions(
                 allowed_origins=["*"],
-                allowed_methods=[lambda_.HttpMethod.POST],
+                allowed_methods=[lambda_.HttpMethod.GET, lambda_.HttpMethod.POST],
                 allowed_headers=["authorization", "content-type"],
             ),
         )

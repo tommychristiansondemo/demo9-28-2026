@@ -16,6 +16,7 @@ from policy_portal.frontend_stack import FrontendStack
 from policy_portal.insights_site_stack import InsightsSiteStack
 from policy_portal.insights_api_stack import InsightsApiStack
 from policy_portal.model_selector_stack import ModelSelectorStack
+from policy_portal.memory_stack import MemoryStack
 
 ACCOUNT = "154833006816"
 REGION = "us-east-2"
@@ -52,6 +53,8 @@ frontend = FrontendStack(
 )
 frontend.add_dependency(cert_stack)
 
+memory = MemoryStack(app, "PolicyPortal-Memory", env=main_env)
+
 
 def _agent_code_exists() -> bool:
     """Two-phase deploy, same pattern as the ECR-image ordering in prior
@@ -82,12 +85,15 @@ if _agent_code_exists():
         knowledge_base_id=kb.knowledge_base.attr_knowledge_base_id,
         guardrail_id=guardrail.guardrail.attr_guardrail_id,
         guardrail_version="DRAFT",
+        memory_id=memory.memory.memory_id,
+        memory_arn=memory.memory.memory_arn,
     )
     agent_runtime.add_dependency(network)
     agent_runtime.add_dependency(data)
     agent_runtime.add_dependency(gateway)
     agent_runtime.add_dependency(kb)
     agent_runtime.add_dependency(guardrail)
+    agent_runtime.add_dependency(memory)
 
     api = ApiStack(
         app, "PolicyPortal-Api", env=main_env,
@@ -95,8 +101,11 @@ if _agent_code_exists():
         lambda_sg=network.lambda_sg,
         agent_runtime_arn=agent_runtime.runtime.attr_agent_runtime_arn,
         agent_runtime_endpoint_name=agent_runtime.endpoint.name,
+        memory_id=memory.memory.memory_id,
+        memory_arn=memory.memory.memory_arn,
     )
     api.add_dependency(agent_runtime)
+    api.add_dependency(memory)
 
     insights_site = InsightsSiteStack(app, "PolicyPortal-InsightsSite", env=main_env)
 
