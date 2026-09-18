@@ -274,26 +274,64 @@ function ModelTuningPanel({ config }) {
   );
 }
 
+// AgentCore Memory keeps conversation state server-side now, keyed on
+// (username, session_id) -- the browser only needs to remember which
+// session_id belongs to it, not the conversation itself. Scoped per
+// username (not global) since a shared classroom machine could see more
+// than one student sign in.
+function getOrCreateSessionId(username) {
+  const key = `policyportal_session_id_${username}`;
+  try {
+    let id = localStorage.getItem(key);
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    // Private browsing / blocked storage: fall back to an in-memory id for
+    // this page load only -- the conversation just won't survive a reload.
+    return `session-${username}-${Date.now()}`;
+  }
+}
+
+const WELCOME_MESSAGE = {
+  role: "system",
+  text: "This assistant answers questions grounded in real organizational policy documents, can check your leave balance, and can submit a formal request on your behalf. All messages pass through a Bedrock Guardrail that masks PII. Your conversation is remembered server-side (Bedrock AgentCore Memory) -- reloading this page won't lose it.",
+};
+
 function ChatPanel({ config, session, onSignOut }) {
-  const [messages, setMessages] = useState([
-    {
-      role: "system",
-      text: "This assistant answers questions grounded in real organizational policy documents, can check your leave balance, and can submit a formal request on your behalf. All messages pass through a Bedrock Guardrail that masks PII.",
-    },
-  ]);
+  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sessionId] = useState(() => getOrCreateSessionId(session.username));
   const logRef = useRef(null);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [messages]);
 
+  // Redraw any existing conversation for this (user, session_id) on
+  // mount -- the concrete, demoable proof that a page reload no longer
+  // loses history now that it's stored server-side.
+  useEffect(() => {
+    let cancelled = false;
+    const url = `${config.apiUrl}?session_id=${encodeURIComponent(sessionId)}`;
+    fetch(url, { headers: { Authorization: `Bearer ${session.accessToken}` } })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data.history || !data.history.length) return;
+        setMessages((m) => [...m, ...data.history]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   const send = async (text) => {
     if (!text.trim() || busy) return;
-    const history = messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ role: m.role, text: m.text }));
 
     setMessages((m) => [...m, { role: "user", text }]);
     setInput("");
@@ -305,7 +343,7 @@ function ChatPanel({ config, session, onSignOut }) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.accessToken}`,
         },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({ message: text, session_id: sessionId }),
       });
       const data = await resp.json();
       if (!resp.ok) {
